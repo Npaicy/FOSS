@@ -15,12 +15,12 @@ pg_hint_plan: We adopt the version specified in HybridQO. Install it following t
 ### Running
 1. Modify config.py according to the PostgreSQL settings and setting the experiment in config.py
 2. run
-    ```sh
-        python run.py
-    ```
+```sh
+    python run.py
+```
 ### Result
-    ```sh
-        tensorboard --logdir './runstate'
-    ```
-OR
-Just examine the JSON document located in the 'timely_result' folder.
+```sh
+    tensorboard --logdir './runstate'
+```
+OR\\
+Examine the JSON document located in the 'timely_result' folder.
