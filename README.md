@@ -22,5 +22,5 @@ pg_hint_plan: We adopt the version specified in HybridQO. Install it following t
 ```sh
     tensorboard --logdir '../runstate'
 ```
-OR\\
-Examine the JSON document located in the 'timely_result' folder.
+OR
+  Examine the JSON document located in the 'timely_result' folder.
