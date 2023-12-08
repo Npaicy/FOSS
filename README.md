@@ -5,7 +5,7 @@ Pytorch implementation of FOSS: A Self-Learned Doctor for Query Pptimizer.
 - Python 3.7 
 - Pytorch 1.12
 - Ray 2.4.0
-
+- gymnasium 0.26.3
 ### PostgreSQL 
 
 PostgreSQL: v12.1
@@ -16,11 +16,11 @@ pg_hint_plan: We adopt the version specified in HybridQO. Install it following t
 1. Modify config.py according to the PostgreSQL settings and setting the experiment in config.py
 2. run
 ```sh
-    python run.py
+    python ./FOSS/run.py
 ```
 ### Result
 ```sh
-    tensorboard --logdir '../runstate'
+    tensorboard --logdir './runstate'
 ```
 OR
 ```
