@@ -1,5 +1,5 @@
 # FOSS
-Pytorch implementation of FOSS: A Self-Learned Doctor for Query Pptimizer.
+Pytorch implementation of FOSS: A Self-Learned Doctor for Query Optimizer.
 
 ### Requirments
 - Python 3.7 
