@@ -1,5 +1,5 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = "4"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 import torch
 # 3096 2048
 class Config:
@@ -8,7 +8,7 @@ class Config:
         # ======   PG Config   =======
         self.max_time_out = 2e5
         self.mode = 'JOBRand'
-        self.expname = 'FINAL3_1024'
+        self.expname = '1234'
         self.database = 'imdb'
         self.user = 'postgres'
         self.password = ''
@@ -36,7 +36,7 @@ class Config:
         self.hidden_dim = self.emb_size * 7 + 2 * (self.emb_size // 8) + 1 + self.emb_size // 2
         # ====== General ========
         self.device = torch.device("cuda")
-        self.seed = 8888
+        self.seed = 1234
         self.alpha = 0.05 # pair分割点，重要参数
         self.beta = 0.75
         # self.max_pooling = 5000
@@ -45,7 +45,7 @@ class Config:
         self.num_agents = 1
         self.num_policies = 1
         self.querynum_perepoch = 10
-        self.startiter = 2
+        self.startiter = 1
         self.maxbounty = 12
         self.timeoutcoeff = 1.5
         # self.hist_file = '../hist&sample/{}_hist_file_200.pkl'.format(self.database)

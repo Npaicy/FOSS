@@ -316,7 +316,7 @@ if __name__ == "__main__":
         #=================Train================
         train_time = 0
         candidatebest_counts = 0
-        inner_iterations = min(2 + 2 * iter , 10) #15
+        inner_iterations = min(0 + 2 * iter , 15) #15
         for inner_iter in range(inner_iterations):
             latencybuffer = planhelper.getPGLatencyBuffer()
             bpm.update_latencyBuffer.remote(latencybuffer)

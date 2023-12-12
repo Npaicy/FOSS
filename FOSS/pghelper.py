@@ -47,7 +47,7 @@ class PGHelper:
                 finding_time = end - start
                 return out,True, finding_time
         try:
-            self.cur.execute("SET statement_timeout = "+str(timeout)+ ";")
+            self.cur.execute("SET statement_timeout = " + str(timeout) + ";")
             self.cur.execute(hint + "explain (COSTS, FORMAT JSON,ANALYZE) "+sql)
             rows = self.cur.fetchall()
             plan_json = rows[0][0][0]
@@ -100,8 +100,8 @@ class PGHelper:
     def getCostPlanJson(self,hint,sql,timeout = config.max_time_out):
         import time
         startTime = time.time()
-        self.cur.execute("SET statement_timeout = "+str(timeout)+ ";")
-        self.cur.execute(hint+"explain (COSTS, FORMAT JSON) "+sql)
+        self.cur.execute("SET statement_timeout = " + str(timeout) + ";")
+        self.cur.execute(hint + "explain (COSTS, FORMAT JSON) " + sql)
         rows = self.cur.fetchall()
         plan_json = rows[0][0][0]
         plan_json['Planning Time'] = time.time() - startTime
