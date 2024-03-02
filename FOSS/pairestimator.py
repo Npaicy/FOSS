@@ -3,40 +3,14 @@ import torch.nn as nn
 import torch
 from ASL import ASLSingleLabel
 import numpy as np
-# class PairCompare(nn.Module):
-#     def __init__(self,hid_units = 256, device = None):
-#         nn.Module.__init__(self)
-#         self.device = config.device if device == None else device
-#         self.PlanNet = PlanNetwork()
-#         self.Prediction = nn.Sequential(
-#             nn.Linear((config.hidden_dim ) * 2 , hid_units),
-#             nn.LeakyReLU(),
-#             nn.Linear(hid_units, hid_units // 2),
-#             nn.LeakyReLU(),
-#             nn.Linear(hid_units // 2, config.classNum + 1))
-
-#     def forward(self,feature):
-#         left_input = self.PlanNet(feature['left'])
-#         right_input = self.PlanNet(feature['right'])
-#         left_steps = feature['left']['steps'].float()# .to(self.device)
-#         right_steps = feature['right']['steps'].float()# .to(self.device)
-#         # if posSignal == 'left':
-#         #     pos = torch.zeros_like(steps,device = self.device)
-#         # elif posSignal == 'right':
-#         #     pos = torch.ones_like(steps,device = self.device)
-#         # left_input = torch.cat([left_input,left_steps], dim = -1)
-#         # right_input = torch.cat([right_input,right_steps], dim=-1)
-#         final_input = torch.cat([left_input,right_input], dim= -1)
-#         final_output = self.Prediction(final_input)
-#         return final_output
 class PairCompare(nn.Module):
     def __init__(self,hid_units = 256, output_dim = 3):
         nn.Module.__init__(self)
         self.embed = PlanNetwork()
         in_feature = self.embed.hidden_dim
-        self.out_mlp1 = nn.Linear(in_feature + 1 , hid_units)#.to(self.device)
-        self.out_mlp2 = nn.Linear(hid_units, hid_units // 2)#.to(self.device)
-        self.out_mlp3 = nn.Linear(hid_units // 2, output_dim)#.to(self.device)#modify
+        self.out_mlp1 = nn.Linear(in_feature + 1 , hid_units)
+        self.out_mlp2 = nn.Linear(hid_units, hid_units // 2)
+        self.out_mlp3 = nn.Linear(hid_units // 2, output_dim)
         # self.out_dropout = nn.Dropout(0.3)
         self.reLU  =nn.LeakyReLU()
     def forward(self,feature):
@@ -80,8 +54,8 @@ class PairTrainer:
         else:
             self.device = device
         self.seed = self.config.seed
-        torch.manual_seed(self.seed)            # 为CPU设置随机种子
-        torch.cuda.manual_seed(self.seed)       # 为当前GPU设置随机种子
+        torch.manual_seed(self.seed)         
+        torch.cuda.manual_seed(self.seed)       
         torch.cuda.manual_seed_all(self.seed) 
         self._net = PairCompare(output_dim = self.config.classNum + 1).to(self.device)
         self.optimizer = torch.optim.Adam(self._net.parameters(),lr = self.config.pair_lr)
@@ -216,20 +190,6 @@ class PairTrainer:
             prob = self._net({'left': left_batch, 'right': right_batch})
         predicted_class = torch.argmax(prob, dim=1).tolist()
         return predicted_class[0],predicted_class[1],predicted_class[2]
-    
-    # def predict_step4(self, curr, optimal, base, best):
-    #     self._net.eval()
-    #     curr = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in curr.items()}
-    #     optimal = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in optimal.items()}
-    #     base = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in base.items()}
-    #     best = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in best.items()}
-    #     features = [{'left':optimal,'right':curr},{'left':base,'right':curr},{'left':curr,'right':best}]
-    #     left_batch = {k: torch.cat([feature['left'][k] for feature in features], dim=0) for k in curr.keys()}
-    #     right_batch = {k: torch.cat([feature['right'][k] for feature in features], dim=0) for k in curr.keys()}
-    #     with torch.no_grad():
-    #         prob = self._net({'left': left_batch, 'right': right_batch})
-    #     predicted_class = torch.argmax(prob, dim=1).tolist()
-    #     return predicted_class[0],predicted_class[1],predicted_class[2]
     def predict_list(self, inputs):
         self._net.eval()
         batch_size = 64
@@ -291,8 +251,8 @@ class PairTrainer:
     
     def retrainmodel(self):
         del self._net
-        # torch.manual_seed(self.seed)            # 为CPU设置随机种子
-        # torch.cuda.manual_seed(self.seed)       # 为当前GPU设置随机种子
+        # torch.manual_seed(self.seed)          
+        # torch.cuda.manual_seed(self.seed)      
         # torch.cuda.manual_seed_all(self.seed) 
         self._net = PairCompare(output_dim = self.config.classNum + 1).to(self.device)
         self.optimizer = torch.optim.Adam(self._net.parameters(), lr = self.config.pair_lr)
