@@ -2,56 +2,58 @@ import torch
 import numpy as np
 from collections import deque,defaultdict
 from database_util import *
-from config import Config
 from pghelper import PGHelper
 from encoding import Encoding
 import os
-config = Config()
+import ray
 #@ray.remote
 class PlanHelper:
 
-    def __init__(self):
-        self.pgrunner = PGHelper(config.database,config.user,config.password,config.ip,config.port)
-        self.encoding = Encoding()
-        if os.path.exists(config.encoding_path):
-            self.encoding.load_from_file(config.encoding_path)
+    def __init__(self, globalConfig):
+        self.config = globalConfig
+        self.pgrunner = PGHelper(globalConfig, globalConfig.database,globalConfig.user,globalConfig.password,globalConfig.ip,globalConfig.port)
+        self.encoding = Encoding(self.config)
+        if os.path.exists(globalConfig.encoding_path):
+            self.encoding.load_from_file(globalConfig.encoding_path)
         else:
             print(' Init Encoding......')
             column_data_properties = self.pgrunner.get_column_data_properties()
             self.encoding.loadcdp(column_data_properties)
-            # self.encoding.save_to_file(config.encoding_path)
+            # self.encoding.save_to_file(globalConfig.encoding_path)
         self.alias2full = {}
         self.treeNodes = [] 
         self.hist_file = None
         self.table_sample = None
-        # self.hist_file = pd.read_pickle(config.hist_file)
-        # with open(config.table_sample, "rb") as f:
-        #     self.table_sample = pickle.load(f)
     
     def getPGLatencyBuffer(self):
         return self.pgrunner.latencyBuffer
+    
     def updatePGLatencyBuffer(self,latencyBuffer):
         self.pgrunner.latencyBuffer = latencyBuffer
     def gettablenum(self):
         return self.pgrunner.tablenum
-    def getLatency(self,hint,sql,query_id,timeout = config.max_time_out):
-        if timeout >= config.max_time_out:
-            timeout = config.max_time_out
-        #return [100,False],True
+    def getLatency(self,hint,sql,query_id,timeout = None):
+        if timeout == None or timeout >= self.config.max_time_out:
+            timeout = self.config.max_time_out
         return self.pgrunner.getLatency(hint,sql,query_id,timeout = timeout)
     def getMinLatency(self):
         return self.pgrunner.get_minLatency()
     def tryGetLatency(self,hint,query_id):
         return self.pgrunner.tryGetLatency(hint,query_id)
-    def getLatencyNoCache(self,hint,sql,query_id,timeout = config.max_time_out):
-        if timeout >= config.max_time_out:
-            timeout = config.max_time_out
+    def getLatencyNoCache(self,hint,sql,query_id,timeout = None):
+        if timeout == None or timeout >= self.config.max_time_out:
+            timeout = self.config.max_time_out
         return self.pgrunner.getLatencyNoCache(hint,sql,query_id,timeout = timeout)
     def get_feature(self,hint,sql,toextract,query_id = None,plan_json = None):
         if plan_json == None:
             plan_json = self.pgrunner.getCostPlanJson(hint, sql)
         collated_dict, hint,left_deep =self.js_node2dict(plan_json['Plan'], toextract,query_id = query_id)
         return collated_dict, hint,left_deep, plan_json
+    def get_hintNum(self):
+        hintNum = {}
+        for queryid in self.pgrunner.latencyBuffer:
+            hintNum[queryid] = len(self.pgrunner.latencyBuffer[queryid])
+        return hintNum
 
     def js_node2dict(self, node,toextract,query_id = None):
         if toextract:
@@ -59,9 +61,12 @@ class PlanHelper:
         else:
             hint = None
         # print(len(self.encoding.join2idx))
-        treeNode = self.traversePlan(node,hint,toextract,query_id = query_id)
+        try:
+            treeNode = self.traversePlan(node,hint,toextract,query_id = query_id)
+        except:
+            print(query_id)
         _dict = self.node2dict(treeNode)
-        collated_dict = self.pre_collate(_dict)
+        collated_dict = self.pre_collate(_dict, max_node=self.config.maxnode)
         self.treeNodes.clear()
         del self.treeNodes[:]
         left_deep = None
@@ -75,24 +80,24 @@ class PlanHelper:
         if len(hint['join operator']) <= 1:
             return newhint,False
         newhint['join order'].extend(hint['join order'][0])
-        newhint['join operator'].append(config.operator_pg2hint[hint['join operator'][0]])
+        newhint['join operator'].append(self.config.operator_pg2hint[hint['join operator'][0]])
         for i in range(1,len(hint['join order'])):
             if hint['join order'][i][0] not in newhint['join order'] and hint['join order'][i][1] in newhint['join order']:
                 newhint['join order'].append(hint['join order'][i][0])
-                newhint['join operator'].append(config.operator_pg2hint[hint['join operator'][i]])
+                newhint['join operator'].append(self.config.operator_pg2hint[hint['join operator'][i]])
             elif hint['join order'][i][0] in newhint['join order'] and hint['join order'][i][1] not in newhint['join order']:
                 newhint['join order'].append(hint['join order'][i][1])
-                newhint['join operator'].append(config.operator_pg2hint[hint['join operator'][i]])
+                newhint['join operator'].append(self.config.operator_pg2hint[hint['join operator'][i]])
             elif  hint['join order'][i][0] not in newhint['join order'] and hint['join order'][i][1] not in newhint['join order']:
                 newhint['join order'].extend(hint['join order'][i])
-                newhint['join operator'].append(config.operator_pg2hint[hint['join operator'][i]])
+                newhint['join operator'].append(self.config.operator_pg2hint[hint['join operator'][i]])
                 left_deep = False
         for i in range(len(newhint['join order'])):
             newhint['join order'][i] = newhint['join order'][i].strip('()')
         return newhint,left_deep
 
     # pre-process first half of old collator
-    def pre_collate(self, the_dict, max_node=config.maxnode, rel_pos_max=20, alpha=0):
+    def pre_collate(self, the_dict, max_node, rel_pos_max=20, alpha=0):
         x = pad_2d_unsqueeze(the_dict['features'], max_node)
         N = len(the_dict['features'])
         attn_bias = torch.zeros([N + 1, N + 1], dtype=torch.float)
@@ -166,23 +171,22 @@ class PlanHelper:
         # typeId = ray.get(encoding.encode_type.remote(nodeType))
         typeId = self.encoding.encode_type(nodeType)
         card = None  #plan['Actual Rows']
-        join,filters,alias = processCond(plan)
+        join,filters,db_est,alias = processCond(plan)
+
         if len(join) > 1:
             join_ = ' and '.join(sorted(join))
         elif len(join) == 1:
             join_ = join[0]
         else: join_ = None
-        # filters, alias = formatFilter(plan)
-        # join = formatJoin(plan,alias)
-        #joinId = ray.get(encoding.encode_join.remote(join_))
         joinids = self.encoding.encode_join(join_)
+
         # left_col,right_col = joinids[0], joinids[1]
         if alias != None:
             filters_encoded = self.encoding.encode_filters(filters, self.alias2full[alias])
         else:
             filters_encoded = self.encoding.encode_filters(filters)
         root = TreeNode(nodeType,table, table_id,typeId, filters, card, joinids, join_,
-                        filters_encoded, pos)
+                        filters_encoded,db_est, pos)
         
         self.treeNodes.append(root)
         
@@ -208,7 +212,7 @@ class PlanHelper:
         if toextract:
             gethint(plan,hint,join)
             # extracthint(plan,hint,alias)
-        root.feature = node2feature(root,self.encoding,self.hist_file,self.table_sample)
+        root.feature = node2feature(root)
         return root
 
     def calculate_height(self, adj_list, tree_size):
@@ -246,3 +250,27 @@ class PlanHelper:
         exechint = '/*+' + leading_hint + '\n' + '\n'.join(join_hint) + '*/\n'
         # print(exechint)
         return exechint
+
+@ray.remote
+class PlanHelperRemote():
+    def __init__(self,globalConfig):
+        self.config = globalConfig
+        self.planhelper = PlanHelper(globalConfig)
+    def GetFeature(self,hint,sql,toextract,query_id = None):
+        return self.planhelper.get_feature(hint,sql, toextract,query_id = query_id) 
+    def GetLatency(self,hint,sql, query_id, timeout = None):
+        if timeout == None:
+            timeout = self.config.max_time_out
+        return self.planhelper.getLatency(hint,sql, query_id, timeout)
+    def SaveEncoding(self,path):
+        self.planhelper.encoding.save_to_file(path)
+    def GetPGLatencyBuffer(self):
+        return self.planhelper.getPGLatencyBuffer()
+    def GetTableNum(self):
+        return self.planhelper.gettablenum()
+    def GetExechint(self,hintdict):
+        return self.planhelper.to_exechint(hintdict)
+    def GetSortedQueryID(self):
+        hintNum = self.planhelper.get_hintNum()
+        sorted_keys = sorted(hintNum, key=hintNum.get)
+        return sorted_keys

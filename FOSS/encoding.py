@@ -1,13 +1,13 @@
-
 import json
-#@ray.remote
-from config import Config
-config = Config()
+BINOP = [' >= ',' <= ',' = ',' > ',' < ']
 class Encoding:
-    def __init__(self,column_min_max_vals = None):
+    def __init__(self,genConfig, column_min_max_vals = None):
+        self.config = genConfig
         self.column_min_max_vals = column_min_max_vals
-        self.op2idx ={'>': 0,'=': 1,'<': 2,'>=':3,'<=':4,'NA':5}
-        self.idx2op = {0: '>', 1: '=', 2: '<',3: '>=',4: '<=', 5: 'NA'}
+        self.op2idx ={'= ANY': 0,'>=':1,'<=':2,'>': 3,'=': 4,'<': 5,'NA':6,'IS NULL':7,'IS NOT NULL':8, '<>':9,'~~':10,'!~~':11, '~~*': 12}
+        self.idx2op = {}
+        for k,v in self.op2idx.items():
+            self.idx2op[v] = k
         self.col2idx = {'NA':0}
         self.idx2col = {0:'NA'}
         self.type2idx = {
@@ -24,23 +24,25 @@ class Encoding:
             "Index Only Scan": 10,
             "Bitmap Heap Scan": 11,
             "Bitmap Index Scan": 12,
-            "Gather Merge": 13
+            "Gather Merge": 13,
+            "Limit": 14
         }
         self.idx2type = {
-            "0": "Aggregate",
-            "1": "Nested Loop",
-            "2": "Seq Scan",
-            "3": "Index Scan",
-            "4": "Hash Join",
-            "5": "Hash",
-            "6": "Merge Join",
-            "7": "Sort",
-            "8": "Gather",
-            "9": "Materialize",
-            "10": "Index Only Scan",
-            "11": "Bitmap Heap Scan",
-            "12": "Bitmap Index Scan",
-            "13": "Gather Merge"
+            0: "Aggregate",
+            1: "Nested Loop",
+            2: "Seq Scan",
+            3: "Index Scan",
+            4: "Hash Join",
+            5: "Hash",
+            6: "Merge Join",
+            7: "Sort",
+            8: "Gather",
+            9: "Materialize",
+            10: "Index Only Scan",
+            11: "Bitmap Heap Scan",
+            12: "Bitmap Index Scan",
+            13: "Gather Merge",
+            14: 'Limit'
         }
         # self.join2idx = {}
         # self.idx2join = {}
@@ -59,66 +61,103 @@ class Encoding:
 
     def encode_filters(self,filters=[], name=None):
         ## filters: list of dict
-
+        # print(filters)
         if len(filters) == 0:
             return {
                 'colId': [self.col2idx['NA']],
                 'opId': [self.op2idx['NA']],
-                'val': [0.0]
             }
-        res = {'colId': [], 'opId': [], 'val': []}
+        res = {'colId': [], 'opId': []}
         for filt in filters:
-            # TODO:
             if ("::text" in filt):
-                continue
-            filt = ''.join(c for c in filt if c not in '()')
-            fs = filt.split(' AND ')
-            for f in fs:
-                #           print(filters)
-                #col, op, num = 'a','<','1'
-                #try:
-                col, op, num = f.split(' ')
-                column = name + '.' + col
-                if column not in self.col2idx:
-                    self.col2idx[column] = len(self.col2idx)
-                    self.idx2col[self.col2idx[column]] = column
+                filt = filt.replace('::text','')
+                filt_split = filt.split(' ')
+                col = filt_split[0].strip("'()")
+                if ' = ANY ' in filt:
+                    op = self.op2idx['= ANY']
+                else:
+                    if filt_split[1] not in self.op2idx:
+                        self.op2idx[filt_split[1]] = len(self.op2idx)
+                        print(self.op2idx)
+                    op = self.op2idx[filt_split[1]]
+                # continue
+            elif 'IS NOT NULL' in filt:
+                filt_split = filt.split(' ')
+                col = filt_split[0].strip('()')
+                op = self.op2idx['IS NOT NULL']
+            elif 'IS NULL' in filt:
+                filt_split = filt.split(' ')
+                col = filt_split[0].strip('()')
+                op = self.op2idx['IS NULL']
+            else:
+                filt = ''.join(c for c in filt if c not in '()')
+                if ' OR ' in filt:
+                    fs = filt.split(' OR ')
+                    # print(filt)
+                elif ' AND ' in filt:
+                    fs = filt.split(' AND ')
+                else:
+                    fs = [filt]
+                for f in fs:
+                    for tmpop in self.op2idx:
+                        if tmpop in f:
+                            try:
+                                op = self.op2idx[tmpop]
+                                col = f.split(tmpop)[0]
+                                col = col.strip()
+                                # print(col)
+                                break
+                            except:
+                                print(f)
+                            # try:
+                            #     col, op, _ = f.split(' ')
+                            #     op = self.op2idx[op]
+                            # except:
+                            #     if ' = ANY ' in f:
+                            #         col, _ = f.split(' = ANY ')
+                            #         op = self.op2idx['= ANY']
+                            #     else:
+                            #         print(f)
+                            #         raise 'ERROR'
+            column = name + '.' + col
+            if column not in self.col2idx:
+                self.col2idx[column] = len(self.col2idx)
+                self.idx2col[self.col2idx[column]] = column
+            if self.col2idx[column] not in res['colId']:
                 res['colId'].append(self.col2idx[column])
-                res['opId'].append(self.op2idx[op])
-                res['val'].append(self.normalize_val(column, float(num)))
-
+                res['opId'].append(op)
             if (len(res['colId']) == 0):
-                return {
+                res = {
                     'colId': [self.col2idx['NA']],
-                    'opId': [self.op2idx['NA']],
-                    'val': [0.0]
+                    'opId': [self.op2idx['NA']]
                 }
+                return res
         return res
 
-    # def encode_join(self, join):
-    #     if join not in self.join2idx:
-    #         self.join2idx[join] = len(self.join2idx)
-    #         self.idx2join[self.join2idx[join]] = join
-    #     return self.join2idx[join]
     def encode_join(self, join):
         if join == None:
-            return [self.col2idx['NA']] * config.maxjoins
+            return [self.col2idx['NA']] * self.config.maxjoins
         if ' and ' in join:
             join_lst = join.split(' and ')
         else:
             join_lst = [join]
         joinid = []
         for _join in join_lst:
-            for tc in _join.split(' = '):
-                if tc not in self.col2idx:
-                    self.col2idx[tc] = len(self.col2idx)
-                    self.idx2col[self.col2idx[tc]] = tc
-                joinid.append(self.col2idx[tc])
+            for op in BINOP:
+                if op in _join:
+                    for tc in _join.split(op):
+                        if tc not in self.col2idx:
+                            
+                            self.col2idx[tc] = len(self.col2idx)
+                            self.idx2col[self.col2idx[tc]] = tc
+                        joinid.append(self.col2idx[tc])
+                    break
         if len(joinid) > self.maxjoinlen:
             self.maxjoinlen = len(joinid)
             print('Now Join Length:',self.maxjoinlen)
-        if len(joinid) < config.maxjoins:
-            joinid.extend([self.col2idx['NA']] * (config.maxjoins - len(joinid)))
-        elif len(joinid) > config.maxjoins:
+        if len(joinid) < self.config.maxjoins:
+            joinid.extend([self.col2idx['NA']] * (self.config.maxjoins - len(joinid)))
+        elif len(joinid) > self.config.maxjoins:
             print(join)
             raise Exception('Too many joins! Please increase the value of maxjoins in config.py!')
         return joinid
@@ -159,7 +198,5 @@ class Encoding:
             self.idx2col = data["idx2col"]
             self.type2idx = data["type2idx"]
             self.idx2type = data["idx2type"]
-            # self.join2idx = data["join2idx"]
-            # self.idx2join = data["idx2join"]
             self.table2idx = data["table2idx"]
             self.idx2table = data["idx2table"]

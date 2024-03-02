@@ -1,5 +1,6 @@
 import numpy as np
 from collections import deque
+import math
 OPERATORTYPE = ["Nested Loop", "Hash Join", "Merge Join"]
 CONDTYPE = ['Hash Cond','Join Filter','Index Cond','Merge Cond','Filter','Recheck Cond']
 BINOP = [' >= ',' <= ',' = ',' > ',' < ']
@@ -31,41 +32,26 @@ def floyd_warshall_rewrite(adjacency_matrix):
             for j in range(nrows):
                 M[i][j] = min(M[i][j], M[i][k] + M[k][j])
     return M
-# def node2feature(node):
-#     # type, join, filter123, mask123,table,  pos
-#     # 1, 1, 3x3 (9), 3, 1
-#     num_filter = len(node.filterDict['colId'])
-#     pad = np.zeros((3, 3 - num_filter))
-#     filts = np.array(list(node.filterDict.values()))  #cols, ops, vals
-#     ## 3x3 -> 9, get back with reshape 3,3
-#     filts = np.concatenate((filts, pad), axis=1).flatten()
-#     mask = np.zeros(3)
-#     mask[:num_filter] = 1
-#     type_join = np.array([node.typeId] + node.join)
-#     # table
-#     table = np.array([node.table_id])
-#     pos = np.array([node.pos])
-#     return np.concatenate((type_join, filts, mask, table, pos))
-def node2feature(node, encoding, hist_file, table_sample = None):
-    # type, join, filter123, mask123,table,  pos
-    # 1, 1, 3x3 (9), 3, 1
+def node2feature(node):
+    filtmaxnum = 3
     num_filter = len(node.filterDict['colId'])
-    pad = np.zeros((3, 3 - num_filter))
+    pad = np.zeros((2, filtmaxnum - num_filter))
     filts = np.array(list(node.filterDict.values()))  #cols, ops, vals
-    ## 3x3 -> 9, get back with reshape 3,3
     filts = np.concatenate((filts, pad), axis=1).flatten()
-    mask = np.zeros(3)
+    mask = np.zeros(filtmaxnum)
     mask[:num_filter] = 1
     type_join = np.array([node.typeId] + node.join)
     # table
     # hists = filterDict2Hist(hist_file, node.filterDict, encoding)
     table = np.array([node.table_id])
     pos = np.array([node.pos])
+    db_est = np.array(node.db_est)
+    # print(db_est)
     # if node.table_id == 0 or node.table not in table_sample[node.query_id]:
     #     sample = np.zeros(1000)
     # else:
     #     sample = table_sample[node.query_id][node.table]
-    return np.concatenate((type_join, filts, mask, pos,table))
+    return np.concatenate((type_join, filts, mask, pos,table,db_est))
     # # else:
 
     # return np.concatenate((type_join, filts, mask, pos,hists,table,sample))
@@ -112,28 +98,6 @@ def filterDict2Hist(hist_file, filterDict, encoding):
     ress = ress.flatten()
     return ress    
 
-# def node2feature(node):
-#     # type, join, filter123, mask123
-#     # 1, 1, 3x3 (9), 3
-#     # TODO: add sample (or so-called table)
-
-
-#     num_filter = len(node.filterDict['colId'])
-#     pad = np.zeros((3, 3 - num_filter))
-#     filts = np.array(list(node.filterDict.values()))  # cols, ops, vals
-#     ## 3x3 -> 9, get back with reshape 3,3
-#     filts = np.concatenate((filts, pad), axis=1).flatten()  #将该节点的filter变成3*3矩阵后压缩为一维
-#     mask = np.zeros(3)
-#     mask[:num_filter] = 1
-#     type_join = np.array([node.typeId, node.join])
-
-
-#     table = np.array([node.table_id])
-
-#     # return np.concatenate((type_join,filts,mask))
-#     #sample是采样的行
-#     return np.concatenate((type_join, filts, mask, table))
-
 def pad_1d_unsqueeze(x, padlen):
     x = x + 1  # pad id = 0
     xlen = x.size(0)
@@ -171,14 +135,6 @@ def pad_attn_bias_unsqueeze(x, padlen, alpha):
         new_x[xlen:, :xlen] = alpha
         x = new_x
     return x#.unsqueeze(0)
-# def pad_attn_bias_unsqueeze(x, padlen):
-#     xlen = x.size(0)
-#     if xlen < padlen:
-#         new_x = x.new_zeros([padlen, padlen], dtype=x.dtype).fill_(float('-inf'))
-#         new_x[:xlen, :xlen] = x
-#         new_x[xlen:, :xlen] = 0
-#         x = new_x
-#     return x
 
 def processCond(json_node):
     alias = None
@@ -197,73 +153,30 @@ def processCond(json_node):
         if condtype in json_node:
             cond = json_node[condtype]
             if ' AND ' in cond:
-                cond = cond[1:-1]  #去除括号
+                cond = cond[1:-1]  #去除括
             cond_list = cond.split(' AND ')
+            
             for sc in cond_list:
                 sc = sc[1:-1]
-                for op in BINOP:
-                    if op in sc:
-                        if '\'' not in sc and not sc[-1].isnumeric():
+                if condtype != 'Filter' and '::text' not in sc:
+                    # print(sc)
+                    for op in BINOP:
+                        if op in sc:
                             twoCol = sc.split(op)
+                            left = twoCol[0].split(' ')[0].strip('()')
+                            right = twoCol[1].split(' ')[0].strip('()')
+                            twoCol = [left,right]
                             twoCol = [alias + '.' + col 
                                         if len(col.split('.')) == 1 else col for col in twoCol ]
                             join.append(op.join(twoCol))
                             break
-                        elif sc[-1].isnumeric():
-                            filters.add(sc)
-                            break
-    return join,list(filters),alias
-                
-            
-def formatJoin(json_node,alias):
-   
-    join = None
-    if 'Hash Cond' in json_node:
-        join = json_node['Hash Cond']
-    elif 'Join Filter' in json_node:
-        join = json_node['Join Filter']
-    ## TODO: index cond
-    elif 'Index Cond' in json_node and not json_node['Index Cond'][-2].isnumeric():
-        join = json_node['Index Cond']
-    elif 'Merge Cond' in json_node and not json_node['Merge Cond'][-2].isnumeric():
-        join = json_node['Merge Cond']
-    
-    ## sometimes no alias, say t.id 
-    ## remove repeat (both way are the same)
-    if join is not None:
-        twoCol = join[1:-1].split(' = ')
-        try:
-            twoCol = [alias + '.' + col 
-                    if len(col.split('.')) == 1 else col for col in twoCol ] 
-        except:
-            print(alias,twoCol,json_node)
-        join = ' = '.join(sorted(twoCol))
-    
-    return join
-
-
-def formatFilter(plan):
-    alias = None
-    if 'Alias' in plan:
-        alias = plan['Alias']
-    else:
-        pl = plan
-        while 'parent' in pl:
-            pl = pl['parent']
-            if 'Alias' in pl:
-                alias = pl['Alias']
-                break
-
-    filters = []
-    # recheck cond
-    if 'Filter' in plan and plan['Filter'][-2].isnumeric():
-        filters.append(plan['Filter'])
-    if 'Index Cond' in plan and plan['Index Cond'][-2].isnumeric():
-        filters.append(plan['Index Cond'])
-    if 'Recheck Cond' in plan and plan['Recheck Cond'][-2].isnumeric():
-        filters.append(plan['Recheck Cond'])
-  
-    return filters, alias
+                else:
+                    filters.add((sc))
+    planrows = math.log10(1 + int(json_node['Plan Rows']))
+    totalcost = math.log10(1 + int(json_node['Total Cost']))# json_node['Total Cost']
+    planwidth = math.log10(1 + int(json_node["Plan Width"]))
+    db_est = [planrows, totalcost, planwidth]
+    return join,list(filters),db_est,alias
 
 def gethint(json_node,hint,join):
     if len(join) != 0:
@@ -307,7 +220,6 @@ def extracthint(json_node,hint,alias):
     elif 'Merge Cond' in json_node:
         hint['join operator'].append('Merge Join')
         join = [json_node['Merge Cond']]
-    ## TODO: index cond
     elif 'Index Cond' in json_node and not json_node['Index Cond'][-2].isnumeric():
         if ' AND ' in json_node['Index Cond']:
             join = json_node['Index Cond'].split(' AND ')
@@ -339,7 +251,7 @@ def extracthint(json_node,hint,alias):
 class TreeNode:
 
     def __init__(self, nodeType,table,table_id ,typeId, filt, card, join, join_str,
-                 filterDict, pos):
+                 filterDict,db_est, pos):
         self.nodeType = nodeType
         self.typeId = typeId
         self.filter = filt
@@ -355,6 +267,7 @@ class TreeNode:
         self.rounds = 0
 
         self.filterDict = filterDict
+        self.db_est = db_est
         self.pos = pos
 
         self.parent = None

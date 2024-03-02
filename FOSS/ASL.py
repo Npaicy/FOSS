@@ -11,7 +11,7 @@ class ASLSingleLabel(nn.Module):
         self.gamma_neg = gamma_neg
         self.reduction = reduction
 
-    def forward(self, inputs, target):
+    def forward(self, inputs, target, weights):
         '''
         "input" dimensions: - (batch_size,number_classes)
         "target" dimensions: - (batch_size)
@@ -36,8 +36,9 @@ class ASLSingleLabel(nn.Module):
 
         # loss calculation
         loss = - self.targets_classes.mul(log_preds)
-
         loss = loss.sum(dim=-1)
+        # weights = torch.pow(input=torch.tensor(2),exponent = weights)
+        # loss = weights * loss
         if self.reduction == 'mean':
             loss = loss.mean()
         return loss

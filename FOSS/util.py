@@ -36,10 +36,22 @@ def min_steps(base, modify):
     return swap + diff
 def get_label(ref,cur):
     ratio = (ref - cur) / ref
-    if  ratio >= config.alpha and ratio < config.beta:
-        label = 1
-    elif ratio >= config.beta:
-        label = 2
-    elif ratio < config.alpha:
-        label = 0
+    label = 0
+    for l, p in enumerate(config.splitpoint):
+        if ratio >= p:
+            label = config.classNum - l
+            break
     return label
+
+def get_median(L1, L2):
+    sorted_l1_indices = sorted(range(len(L1)), key=lambda i: L1[i])
+    sorted_l1 = [L1[i] for i in sorted_l1_indices]
+    sorted_l2 = [L2[i] for i in sorted_l1_indices]
+    
+    length = len(sorted_l1)
+    median_index = length // 2
+    
+    median_value_l1 = sorted_l1[median_index]
+    median_value_l2 = sorted_l2[median_index]
+    
+    return median_value_l1, median_value_l2

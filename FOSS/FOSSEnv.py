@@ -1,10 +1,43 @@
 import gymnasium as gym
-from FOSSEnvBase import FOSSEnvBase
 import numpy as np
-from config import Config
 from copy import deepcopy
 from util import min_steps,get_label
-config = Config()
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+from ray.rllib.env.multi_agent_env import MultiAgentEnv
+import os,random
+from pairestimator import PairTrainer
+from manager import QueryManager
+from planhelper import PlanHelper
+import ray
+class FOSSEnvBase(gym.Env):
+    def __init__(self,env_config):
+        
+        # self.planhelper = PlanHelper()
+        self.tablenum = env_config['tableNum']#self.planhelper.gettablenum()
+        self.config   = env_config['genConfig']
+        self.action_space_size = int(((self.tablenum + 5) * (self.tablenum)) / 2) # n(n-1)/2 + 3n
+        # self.observation_space = spaces.Box(-np.inf,np.inf,dtype = np.float32,shape = (config.hidden_dim + 1,))
+        self.observation_space = spaces.Dict({
+            'x':spaces.Box(-np.inf,np.inf,dtype = np.float32,shape = (self.config.maxnode, 10 + 5 + self.config.maxjoins)),
+            'attn_bias':spaces.Box(0,1,dtype = np.float32,shape = (self.config.maxnode + 1,self.config.maxnode + 1)),
+            'heights':spaces.Box(0,self.config.maxnode,dtype = np.int64,shape = (self.config.maxnode,)),
+            'action_mask':spaces.Box(0,1,dtype = np.int32,shape = (self.action_space_size,)),
+            'steps':spaces.Box(0,1,dtype = np.float32,shape = (1,))
+            })
+        self.action_space = spaces.Discrete(self.action_space_size)
+        self.action_inteval = [0]
+        for i in range(1,self.tablenum):
+            self.action_inteval.append(self.action_inteval[-1] + self.tablenum - i)
+
+    def reset(self, seed=None, options=None):
+    
+        return None,None
+    def step(self,action):
+       
+        return None,None,None,None,None
+
 class FOSSEnvTrainBase(gym.Wrapper):
     def __init__(self,env_config) -> None:
         unwrapped_env = FOSSEnvBase(env_config)
@@ -12,10 +45,15 @@ class FOSSEnvTrainBase(gym.Wrapper):
         self.planhelper  = env_config['planhelper']
         self.querymanger = env_config['querymanger']
         self.pairtrainer = env_config['pairtrainer']
-        self.bpm = env_config['bestplanmanager']
+        self.config      = env_config['genConfig']
+        self.bpm         = env_config['bestplanmanager']
+        splitpoint = [1.00] + self.config.splitpoint
+        self.bouns_weight = [0.00]
+        for i in range(len(splitpoint) - 1, 0, -1):
+            self.bouns_weight.append((splitpoint[i] + splitpoint[i - 1]) / 2)
     def reset(self, seed=None, options=None):
         self.stepnum = 0
-        # self.bonusPlus = options['bonusPlus']
+        self.AAM_update_times = options['AAM_times']
         self.candidatehint = []
         self.sql, base_train_feature,self.query_id,self.AAM_best,self.RL_best = self.querymanger.get2train()
         self.baselatency  = self.planhelper.tryGetLatency('',self.query_id)
@@ -29,9 +67,9 @@ class FOSSEnvTrainBase(gym.Wrapper):
             self.action_mask[self.action_inteval[i]:self.action_inteval[i] + self.count_table - i - 1] = 1
         self.action_mask[-3 * (self.count_table - 1):] = 1
         for i,jo in enumerate(self.hintdict['join operator']):   
-            self.action_mask[-3 * i - config.OperatorDict[jo]] = 0
+            self.action_mask[-3 * i - self.config.OperatorDict[jo]] = 0
         # process state
-        feature_dict['steps'] = np.array([self.stepnum * 1.0 / config.maxsteps])
+        feature_dict['steps'] = np.array([self.stepnum * 1.0 / self.config.maxsteps])
         self.baseplan = deepcopy(feature_dict)
         
         feature_dict['action_mask'] = self.action_mask
@@ -44,17 +82,17 @@ class FOSSEnvTrainBase(gym.Wrapper):
         
         self.candidatehint.append(deepcopy(self.hintdict))
 
-        self.bonustobest    = config.maxbounty * (self.AAM_best[1] / self.baselatency)
-        self.bestbonus      = config.maxbounty - self.bonustobest
+        self.bonustobest    = self.config.maxbounty * (self.AAM_best[1] / self.baselatency)
+        self.bestbonus      = self.config.maxbounty - self.bonustobest
         self.bonusignal = 0
         if self.RL_best[1] >= self.baselatency:
             self.comparedplan = self.baseplan
             self.basebonus = 0
-            self.bonustoexplore = config.maxbounty * 0.5
+            self.bonustoexplore = self.config.maxbounty * 0.5
             self.comparedlatency = self.baselatency
         else:
-            self.bonustoexplore = (self.RL_best[1] / self.baselatency) * config.maxbounty
-            self.basebonus      = config.maxbounty - self.bonustoexplore
+            self.bonustoexplore = (self.RL_best[1] / self.baselatency) * self.config.maxbounty
+            self.basebonus      = self.config.maxbounty - self.bonustoexplore
             self.comparedplan = self.RL_best[0]
             self.comparedlatency = self.RL_best[1]
             self.baseidx = 0
@@ -67,12 +105,12 @@ class FOSSEnvTrainBase(gym.Wrapper):
         # =============act on ICP and update action mask===========
         if action >= (self.unwrapped.tablenum * (self.unwrapped.tablenum - 1)) / 2:
             idx = abs(action - self.unwrapped.action_space_size + 1)
-            self.hintdict['join operator'][int(idx/3)] = config.Operatortype[idx%3]
+            self.hintdict['join operator'][int(idx/3)] = self.config.Operatortype[idx%3]
             for i in range(self.count_table - 1):
                 self.action_mask[self.action_inteval[i]:self.action_inteval[i] + self.count_table - i - 1] = 1
             self.action_mask[-3 * (self.count_table - 1):] = 1
             for i,jo in enumerate(self.hintdict['join operator']):   
-                self.action_mask[-3 * i - config.OperatorDict[jo]] = 0
+                self.action_mask[-3 * i - self.config.OperatorDict[jo]] = 0
             # self.isswapC = False
         # 如果是交换两个表的顺序
         else:
@@ -108,13 +146,13 @@ class FOSSEnvTrainBase(gym.Wrapper):
         exechint = self.planhelper.to_exechint(self.hintdict)
         self.currlatency = self.planhelper.tryGetLatency(exechint,self.query_id)
         feature_dict,_,_,_ = self.planhelper.get_feature(exechint, self.sql, False,query_id=self.query_id)
-        feature_dict['steps'] = np.array([self.stepnum * 1.0 / config.maxsteps])
+        feature_dict['steps'] = np.array([self.stepnum * 1.0 / self.config.maxsteps])
         currplan = deepcopy(feature_dict)
         feature_dict['action_mask'] = self.action_mask
         #=========calculate penalty=======
         # if not self.isswapL:
         minsteps = min_steps(self.candidatehint[0], self.hintdict)
-        penalty = (minsteps - self.stepnum) * 2
+        penalty = (minsteps - self.stepnum) * self.config.penalty_coeff
         # else:
         #     penalty = 0
         # self.isswapL = self.isswapC
@@ -142,17 +180,17 @@ class FOSSEnvTrainBase(gym.Wrapper):
         #         self.bonusignal   = self.pairtrainer.predict_pair(self.comparedplan, self.esbestplan)
                 
         # if self.bonusignal == 1:
-        #     bounty = bounty + (0.25 * self.bonustoexplore + self.basebonus)# * (self.stepnum / config.maxsteps)
+        #     bounty = bounty + (0.25 * self.bonustoexplore + self.basebonus)# * (self.stepnum / self.config.maxsteps)
         # elif self.bonusignal == 2:
-        #     bounty = bounty + (0.75 * self.bonustoexplore + self.basebonus)# * (self.stepnum / config.maxsteps)
+        #     bounty = bounty + (0.75 * self.bonustoexplore + self.basebonus)# * (self.stepnum / self.config.maxsteps)
         # else:
         #     if self.basebonus != 0:
         #         if self.optimlatency != None:
         #             self.baseidx = get_label(self.baselatency, self.optimlatency)
         #         else:
         #             self.baseidx = self.pairtrainer.predict_pair(self.esbestplan, currplan)
-        #         bounty = bounty + self.baseidx * (1.0 / 2) * self.basebonus * (3.0 / 4)# * (self.stepnum / config.maxsteps) 
-        # if self.stepnum >= config.maxsteps:
+        #         bounty = bounty + self.baseidx * (1.0 / 2) * self.basebonus * (3.0 / 4)# * (self.stepnum / self.config.maxsteps) 
+        # if self.stepnum >= self.config.maxsteps:
         #     self.is_done = True
         #     self.truncated = True
         #     if self.optimlatency != None:
@@ -177,7 +215,7 @@ class FOSSEnvTrainBase(gym.Wrapper):
         #         self.esbesthint   = exechint
         #         self.beststeps    = self.stepnum
         #         self.esbestplan   = currplan
-        #     if self.stepnum < config.maxsteps:
+        #     if self.stepnum < self.config.maxsteps:
         #         if self.currlatency != None:
         #             bonusignal = get_label(self.comparedlatency, self.currlatency)
         #             AAM_idx = get_label(self.AAM_best[1],self.currlatency) 
@@ -200,7 +238,7 @@ class FOSSEnvTrainBase(gym.Wrapper):
         #                     bounty = bounty + baseidx * (1.0 / 2) * self.basebonus # * (3.0 / 4) 
         #         bounty = 0.2 * bounty
         # # bounty = betteridx * bounscoeff
-        # if self.stepnum >= config.maxsteps:
+        # if self.stepnum >= self.config.maxsteps:
         #     self.is_done = True
         #     self.truncated = True
         #     if self.optimlatency != None:
@@ -236,6 +274,9 @@ class FOSSEnvTrainBase(gym.Wrapper):
         #========== reward style 3===========
         bounty = 0
         if not isloop:
+            if self.currlatency == None and random.random() <= 0.1 and self.AAM_update_times <= 2:
+                self.bpm.add_candidatebest.remote(self.query_id,exechint,currplan,self.sql)
+
             if self.currlatency != None and self.optimlatency != None:
                 betteridx = get_label(self.optimlatency, self.currlatency)
             else:
@@ -291,7 +332,7 @@ class FOSSEnvTrainBase(gym.Wrapper):
             bounty = betteridx * 0.5
         #bounty = 0.2 * bounty
         # bounty = betteridx * bounscoeff
-        if self.stepnum >= config.maxsteps:
+        if self.stepnum >= self.config.maxsteps:
             self.is_done = True
             self.truncated = True
             isvalidate = False
@@ -304,12 +345,13 @@ class FOSSEnvTrainBase(gym.Wrapper):
                     AAM_idx = get_label(self.AAM_best[1],self.optimlatency) 
                 else:
                     AAM_idx = self.pairtrainer.predict_pair(self.AAM_best[0], self.esbestplan) 
-                if AAM_idx == 1:
-                    bounty = bounty + (0.25 * self.bonustobest + self.bestbonus)
+                
+                if AAM_idx != 0:
+                    bounty = bounty + (self.bouns_weight[AAM_idx] * self.bonustobest + self.bestbonus)
                     isvalidate = True
-                elif AAM_idx == 2:
-                    bounty = bounty + (0.85 * self.bonustobest + self.bestbonus)
-                    isvalidate = True
+                # elif AAM_idx == 2:
+                #     bounty = bounty + (0.85 * self.bonustobest + self.bestbonus)
+                #     isvalidate = True
                 else:
                     bounty = bounty + self.bestbonus
             else:
@@ -322,12 +364,14 @@ class FOSSEnvTrainBase(gym.Wrapper):
                         RL_idx = get_label(self.comparedlatency, self.optimlatency)
                     else:
                         RL_idx = self.pairtrainer.predict_pair(self.comparedplan, self.esbestplan)
-                    if RL_idx == 1:
-                        bounty = bounty + (0.25 * (self.bestbonus - self.basebonus) + self.basebonus)
-                    elif RL_idx == 2:
-                        bounty = bounty + (0.85 * (self.bestbonus - self.basebonus) + self.basebonus)
-                    else:
-                        bounty = bounty + self.basebonus
+
+                    bounty = bounty + (self.bouns_weight[RL_idx] * (self.bestbonus - self.basebonus) + self.basebonus)
+                    # if RL_idx == 1:
+                    #     bounty = bounty + (0.25 * (self.bestbonus - self.basebonus) + self.basebonus)
+                    # elif RL_idx == 2:
+                    #     bounty = bounty + (0.85 * (self.bestbonus - self.basebonus) + self.basebonus)
+                    # else:
+                    #     bounty = bounty + self.basebonus
                     # bounty = bounty + (bonusignal * (1.0 / 2) * (self.bestbonus - self.basebonus) + self.basebonus)
                 else:
                     if self.basebonus != 0:
@@ -336,14 +380,200 @@ class FOSSEnvTrainBase(gym.Wrapper):
                         else:
                             base_idx = self.pairtrainer.predict_pair(self.baseplan, self.esbestplan)
                         # bounty = bounty + baseidx * (1.0 / 2) * self.basebonus # * (3.0 / 4) 
-                        if base_idx == 1:
-                            bounty = bounty + (0.25 * self.basebonus)
-                        elif base_idx == 2:
-                            bounty = bounty + (0.85 * self.basebonus)
+                        bounty = bounty + (self.bouns_weight[base_idx] * self.basebonus)
+                        # if base_idx == 1:
+                        #     bounty = bounty + (0.25 * self.basebonus)
+                        # elif base_idx == 2:
+                        #     bounty = bounty + (0.85 * self.basebonus)
             if self.optimlatency == None:            
                 if isvalidate:
-                    self.bpm.add_candidatebest.remote(self.query_id,self.esbesthint,self.beststeps)
+                    self.bpm.add_candidatebest.remote(self.query_id,self.esbesthint,self.esbestplan,self.sql)
 
         reward = penalty + bounty #+ self.basebonus
         return feature_dict, reward, self.is_done,self.truncated,{}
 
+
+class FOSSEnvTrain(MultiAgentEnv):
+
+    def __init__(self,out_config):
+        super().__init__()
+        self.config      = out_config['genConfig']
+        self.pairtrainer = PairTrainer(self.config, device='cpu')
+        self.planhelper  = PlanHelper(self.config)
+        self.querymanger = QueryManager(self.config, planhelper = self.planhelper,isremote=False)
+        self.bpm         = out_config['bestplanmanager']
+        AAM_esbest_feature = ray.get(self.bpm.get_AAM_esbest.remote())
+        self.querymanger.update_AAM_esbest(AAM_esbest_feature)
+        median_hint_latency = ray.get(self.bpm.get_median_plan.remote())
+        self.querymanger.update_Median(median_hint_latency)
+        # RL_esbest_feature = ray.get(self.bpm.get_RL_esbest.remote())
+        # self.querymanger.update_RL_esbest(RL_esbest_feature)
+        if os.path.exists(self.config.model_path):
+            self.pairtrainer.load_model(self.config.model_path)
+            self.AAMversion = os.path.getmtime(self.config.model_path)
+        else:
+            self.AAMversion = None
+        tableNum = self.planhelper.gettablenum()
+        env_config = {'pairtrainer':self.pairtrainer,'querymanger':self.querymanger,
+                      'bestplanmanager':self.bpm,'planhelper':self.planhelper,'tableNum':tableNum, 'genConfig':self.config}
+        self.agents = [FOSSEnvTrainBase(env_config) for _ in range(self.config.num_agents)]
+        self._agent_ids = set(range(self.config.num_agents))
+        self.observation_space = self.agents[0].observation_space
+        self.action_space = self.agents[0].action_space
+        self.AAM_update_times = 0
+        self.resetted = False
+    def reset(self, *, seed=None, options=None):
+        if not self.resetted:
+            self.resetted = True
+            return {},{}
+        super().reset(seed=seed)
+        if os.path.exists(self.config.model_path):
+            now_version = os.path.getmtime(self.config.model_path)
+            if now_version != self.AAMversion:
+                queryImportance = ray.get(self.bpm.update_weightsByRLesbest.remote())
+                self.querymanger.updateBuffer(queryImportance)
+                latencyBuffer = ray.get(self.bpm.get_latencyBuffer.remote())
+                self.planhelper.updatePGLatencyBuffer(latencyBuffer)
+                AAM_esbest_feature = ray.get(self.bpm.get_AAM_esbest.remote())
+                self.querymanger.update_AAM_esbest(AAM_esbest_feature)
+                median_hint_latency = ray.get(self.bpm.get_median_plan.remote())
+                self.querymanger.update_Median(median_hint_latency)
+                # RL_esbest_feature = ray.get(self.bpm.get_RL_esbest.remote())
+                # self.querymanger.update_RL_esbest(RL_esbest_feature)
+                self.pairtrainer.load_model(self.config.model_path)
+                print('Load New AAM|Now VersionTime:{}'.format(now_version))
+                self.AAMversion = now_version
+                self.AAM_update_times += 1
+        self.resetted = True
+        self.terminateds = set()
+        self.truncateds = set()
+        reset_results = [a.reset(options={'AAM_times':self.AAM_update_times}) for a in self.agents]
+        # self.epi += 1
+        return (
+            {i: oi[0] for i, oi in enumerate(reset_results)},
+            {i: oi[1] for i, oi in enumerate(reset_results)},
+        )
+
+    def step(self, action_dict):
+        obs, rew, terminated, truncated, info = {}, {}, {}, {}, {}
+        for i, action in action_dict.items():
+            obs[i], rew[i], terminated[i], truncated[i], info[i] = self.agents[i].step(action)
+            if terminated[i]:
+                self.terminateds.add(i)
+            if truncated[i]:
+                self.truncateds.add(i)
+        terminated["__all__"] = len(self.terminateds) == len(self.agents)
+        truncated["__all__"] = len(self.truncateds) == len(self.agents)
+        return obs, rew, terminated, truncated, info
+
+
+class FOSSEnvTest(MultiAgentEnv):
+    def __init__(self,env_config):
+        super().__init__()
+        self.planhelper = env_config['planhelper']
+        self.config     = env_config['genConfig']
+        self.numagents  = self.config.num_agents
+        
+        tableNum = ray.get(self.planhelper.GetTableNum.remote())
+        self.unwrapped_env = FOSSEnvBase({'tableNum':tableNum, 'genConfig':self.config})
+        self._agent_ids = set(range(self.numagents))
+        self.observation_space = self.unwrapped_env.observation_space
+        self.action_space = self.unwrapped_env.action_space
+        self.resetted = False
+        
+    def reset(self, *, seed=None, options=None):
+        # if not self.resetted or self.isloop:
+        #     self.resetted = True
+        #     self.isloop = False
+        #     return {},{'over':True}
+        
+        super().reset(seed=seed)
+        self.stepnum = 0
+        self.sql = options['sql']
+        self.query_id = options['query_id']
+
+        feature_dict,self.hintdict,left_deep,cost_plan_json = ray.get(self.planhelper.GetFeature.remote('',self.sql,True,query_id = self.query_id))
+        self.plantime = cost_plan_json['Planning Time']
+
+        self.count_table = len(self.hintdict['join order'])
+        
+        if left_deep and self.count_table > 2:
+            assert self.count_table == len(self.hintdict['join operator']) + 1
+            self.use_FOSS = True
+        else:
+            self.use_FOSS = False 
+            print('BAN FOSS')
+        
+        # init action
+        self.action_mask = np.zeros(self.unwrapped_env.action_space_size)
+        for i in range(self.count_table - 1):
+            self.action_mask[ self.unwrapped_env.action_inteval[i]: self.unwrapped_env.action_inteval[i] + self.count_table - i - 1] = 1
+        # self.unwrapped.action_mask[0] = 0  # 交换前两个元素没有意义
+        self.action_mask[-3 * (self.count_table - 1):] = 1
+        for i,jo in enumerate(self.hintdict['join operator']):   
+            self.action_mask[-3 * i - self.config.OperatorDict[jo]] = 0
+        # process state
+        feature_dict['steps'] = np.array([self.stepnum * 1.0 / self.config.maxsteps])
+        state = feature_dict.copy()
+        state['action_mask'] = self.action_mask
+        state_all = {}
+        self.action_mask_tatal = []
+        self.hintdict_total = []
+        self.es_hint = []
+        
+        for i in range(self.numagents):
+            self.hintdict_total.append(deepcopy(self.hintdict))
+            self.action_mask_tatal.append(deepcopy(self.action_mask))
+            state_all.update({i:deepcopy(state)})
+            self.es_hint.append('')
+        info = {'hint':'','useFOSS':self.use_FOSS}
+        return (state_all,info)
+    def step(self, action_dict):
+        self.stepnum += 1
+        state = {}
+        rew, terminated, truncated, info =  {}, {'__all__':False}, {'__all__':False},{}
+        for agent_id, action in action_dict.items():
+            if action >= (self.unwrapped_env.tablenum * (self.unwrapped_env.tablenum - 1)) / 2:
+                idx = abs(action - self.unwrapped_env.action_space_size + 1)
+                self.hintdict_total[agent_id]['join operator'][int(idx/3)] = self.config.Operatortype[idx%3]
+                for i in range(self.count_table - 1):
+                    self.action_mask_tatal[agent_id][self.unwrapped_env.action_inteval[i]:self.unwrapped_env.action_inteval[i] + self.count_table - i - 1] = 1
+                self.action_mask_tatal[agent_id][-3 * (self.count_table - 1):] = 1
+                for i,jo in enumerate(self.hintdict_total[agent_id]['join operator']):   
+                    self.action_mask_tatal[agent_id][-3 * i - self.config.OperatorDict[jo]] = 0
+            # 如果是交换两个表的顺序
+            else:
+                tag = -1
+                for i in range(len(self.unwrapped_env.action_inteval)):
+                    if action < self.unwrapped_env.action_inteval[i]:
+                        tag = i
+                        break
+                if tag != -1:
+                    t1 = tag - 1
+                    t2 = action - self.unwrapped_env.action_inteval[t1] + tag
+                    temp = self.hintdict_total[agent_id]['join order'][t1]
+                    self.hintdict_total[agent_id]['join order'][t1] = self.hintdict_total[agent_id]['join order'][t2]
+                    self.hintdict_total[agent_id]['join order'][t2] = temp 
+                    # 第tag个与第action - self.action_inteval[tag - 1] + 1 + tag交换
+                    self.action_mask_tatal[agent_id].fill(0)
+                    if t1 == 0 or t1 == 1 or t2 == 1:
+                        self.action_mask_tatal[agent_id][-3:] = 1
+                    else:
+                        self.action_mask_tatal[agent_id][-3 * (t1):-3 * (t1 - 1)] = 1
+                        self.action_mask_tatal[agent_id][-3 * (t2):-3 * (t2 - 1)] = 1
+                    
+            exechint = ray.get(self.planhelper.GetExechint.remote(self.hintdict_total[agent_id]))
+            # latency_timeout,_ = self.planhelper.getLatency(exechint,self.sql,self.query_id)
+            # print('test_{}_agent_{}_step_{},Latency:{:.4f}'.format(self.query_id,agent_id,self.stepnum,latency_timeout[0]))
+            feature_dict,_,_,cost_plan_json = ray.get(self.planhelper.GetFeature.remote(exechint,self.sql,False,query_id = self.query_id))
+            self.plantime += cost_plan_json['Planning Time']
+            feature_dict['steps'] = np.array([self.stepnum * 1.0 / self.config.maxsteps])
+            state[agent_id] = feature_dict.copy()
+            state[agent_id]['action_mask'] = self.action_mask_tatal[agent_id]
+            info[agent_id] = {'hint':exechint}
+            rew[agent_id] = 0
+        if self.stepnum >= self.config.maxsteps:
+            terminated['__all__'] = True
+            truncated['__all__'] = True
+
+        return state, rew, terminated, truncated, info

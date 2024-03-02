@@ -1,35 +1,38 @@
 import psycopg2
-from config import Config
-import os,shutil
+# from config import Config
+import os, shutil
 import json
 import time
-config  = Config()
 
 class PGHelper:
-    def __init__(self,dbname = '',user = '',password = '',host = '',port = 5432):
+    def __init__(self,globalConfig ,dbname = '',user = '',password = '',host = '',port = 5432):
         self.con = psycopg2.connect(database=dbname, user=user,password=password, host=host, port=port)
         self.cur = self.con.cursor()
+        self.config = globalConfig
         self.cur.execute("load 'pg_hint_plan';")
         self.PG_DataType = ['smallint','integer','bigint','decimal','numeric','real',
                 'double precision','smallserial','serial','bigserial']
         self.latencyBuffer = {}
         self.latencyTotalBuffer = {}
-        if os.path.exists(config.pg_latency):
-            shutil.copy(config.pg_latency,config.latency_buffer_path)
-            tmp_buffer_file = open(config.latency_buffer_path,"r")
+        if os.path.exists(self.config.pg_latency):
+            shutil.copy(self.config.pg_latency, self.config.latency_buffer_path)
+            tmp_buffer_file = open(self.config.latency_buffer_path,"r")
             lines = tmp_buffer_file.readlines()
+            tmp_buffer_file.close()
             for line in lines:
                 data = json.loads(line)
                 if data[0] not in self.latencyBuffer:
                     self.latencyBuffer[data[0]] = {}
                 self.latencyBuffer[data[0]][data[1]] = data[2]
-            self.buffer_file = open(config.latency_buffer_path,"a")
+            self.buffer_file = open(self.config.latency_buffer_path,"a")
         else:
-            self.buffer_file = open(config.latency_buffer_path,"a")
+            self.buffer_file = open(self.config.latency_buffer_path,"w")
         self.cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';")
         self.table_names = [name[0] for name in self.cur.fetchall()]
         self.tablenum = len(self.table_names)
-    def getLatency(self, hint, sql, queryid, timeout = config.max_time_out):
+
+    def getLatency(self, hint, sql, queryid, timeout):
+        # return [123.12,False], True,None
         if queryid in self.latencyBuffer:
             if hint in self.latencyBuffer[queryid]:
                 return self.latencyBuffer[queryid][hint],False,None
@@ -65,17 +68,18 @@ class PGHelper:
         self.latencyBuffer[queryid][hint] = out
         self.buffer_file.write(json.dumps([queryid, hint, out])+"\n")
         self.buffer_file.flush()
-        return out, True,None
+        return out, True, None
+    
     def tryGetLatency(self,hint,query_id):
         try:
             lat_timeout = self.latencyBuffer[query_id][hint]
             if lat_timeout[1]:
-                return config.max_time_out
+                return None
             else:
                 return lat_timeout[0]
         except:
             return None
-    def getLatencyNoCache(self,hint,sql,queryid,timeout = config.max_time_out):
+    def getLatencyNoCache(self,hint,sql,queryid,timeout):
         try:
             # self.cur.execute("SET geqo TO off;")
             self.cur.execute("SET statement_timeout = "+str(timeout)+ ";")
@@ -97,10 +101,10 @@ class PGHelper:
         self.buffer_file.write(json.dumps([queryid, hint, out])+"\n")
         self.buffer_file.flush()
         return out, True
-    def getCostPlanJson(self,hint,sql,timeout = config.max_time_out):
+    def getCostPlanJson(self,hint,sql):
         import time
         startTime = time.time()
-        self.cur.execute("SET statement_timeout = " + str(timeout) + ";")
+        self.cur.execute("SET statement_timeout = " + str(self.config.max_time_out) + ";")
         self.cur.execute(hint + "explain (COSTS, FORMAT JSON) " + sql)
         rows = self.cur.fetchall()
         plan_json = rows[0][0][0]
@@ -109,7 +113,7 @@ class PGHelper:
     def get_minLatency(self):
         minLatency = {}
         for queryid in self.latencyBuffer:
-            minlat = config.max_time_out
+            minlat = self.config.max_time_out
             hint2send = ''
             for hint in self.latencyBuffer[queryid]:
                 if self.latencyBuffer[queryid][hint][0] < minlat:
@@ -118,6 +122,8 @@ class PGHelper:
             # minLatency = round(minLatency,3)
             minLatency[queryid] = [minlat,hint2send]
         return minLatency
+
+    
     def gettablenum(self):
         return self.tablenum
     
