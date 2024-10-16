@@ -8,13 +8,13 @@ class Config:
 
         # ======   PG Config   =======
         self.max_time_out = 3e5
-        self.mode = 'JOBRand'
+        self.mode = ''
         self.expname = ''
-        self.database = 'imdb'
-        self.user = 'zhongkai'
+        self.database = ''
+        self.user = ''
         self.password = ''
-        self.ip = '127.0.0.1'
-        self.port  = 5431
+        self.ip = ''
+        self.port  = 5432
         self.operator_pg2hint = {'Hash Join':'HASHJOIN','Merge Join': 'MERGEJOIN','Nested Loop':'NESTLOOP'}
         self.OperatorDict = {'NESTLOOP':1,'HASHJOIN':2,'MERGEJOIN':3}
         self.Operatortype = ['NESTLOOP','HASHJOIN','MERGEJOIN']
