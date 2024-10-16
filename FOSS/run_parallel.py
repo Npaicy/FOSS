@@ -264,7 +264,7 @@ if __name__ == "__main__":
                         help="Random Seed")
     parser.add_argument("--Maxsteps", type=int, default = 3,
                         help="Max steps of agent")
-    parser.add_argument("--Maxsamples", type=int, default = 10,
+    parser.add_argument("--Maxsamples", type=int, default = 5, # JOBRand 5 TPCDS&STACK 25 or more,
                         help="Maximum number of samples in a single iteration (in best plan manager)")
     parser.add_argument("--TotalIter", type=int, default = 300,
                         help="The total number of iterations for which the planner is trained")
