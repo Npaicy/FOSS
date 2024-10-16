@@ -2,7 +2,6 @@ import os
 os.environ['CUDA_VISIBLE_DEVICES'] = "1"
 
 import torch
-# 3096 2048
 class Config:
     def __init__(self):
 
@@ -21,7 +20,7 @@ class Config:
       
         # ====== Embed Config ========
         self.types = 20     
-        self.columns = 80 # JOBRand :60 TPCDS:80  STACK:50 JOBEXT:80
+        self.columns = 60 # JOBRand :60 TPCDS:80  STACK:50 JOBEXT:80
         self.heightsize = 30 #30
         self.maxnode = 50 #50
         self.maxjoins = 10
