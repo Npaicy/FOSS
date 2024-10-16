@@ -11,39 +11,40 @@ from config import Config
 config = Config()
 
 class FeatureEmbed(nn.Module):
-    def __init__(self, embed_size = 32, tables = 22, types = config.types, columns = config.columns, \
-                 ops = 12, pos = 4):
+    def __init__(self, embed_size = 32, tables = config.tablenum, types = config.types, columns = config.columns, \
+                 ops = config.opsnum, pos = 5):
         super(FeatureEmbed, self).__init__()
-        self.typeEmbed = nn.Embedding(types, embed_size)
-        self.tableEmbed = nn.Embedding(tables, embed_size)
-
-        self.columnEmbed = nn.Embedding(columns, 2 * embed_size)
-        self.opEmbed = nn.Embedding(ops, embed_size // 8)
-        self.posEmbed = nn.Embedding(pos, embed_size // 8)
-
-        self.linearFilter2 = nn.Linear(2 * embed_size  + embed_size // 8,
-                                       2 * embed_size  + embed_size // 8)
-        self.linearFilter = nn.Linear(2 * embed_size  + embed_size // 8,
-                                      2 * embed_size  + embed_size // 8) #        
-        self.linearJoin1 = nn.Linear(2 * config.maxjoins  * embed_size,   3 * embed_size)
-        self.linearJoin2 = nn.Linear(3 * embed_size,  3 * embed_size)
-        self.linearest = nn.Linear(3, embed_size // 4)
-        self.project = nn.Linear(
-                embed_size * 7 + 4 * (embed_size // 8),
-                embed_size * 7 + 4 * (embed_size // 8))
+        self.typeEmbed      = nn.Embedding(types, embed_size)
+        self.tableEmbed     = nn.Embedding(tables, embed_size)
+        self.columnEmbed    = nn.Embedding(columns, 2 * embed_size)
+        self.opEmbed        = nn.Embedding(ops, embed_size // 8)
+        self.dtypeEmbed     = nn.Embedding(4, embed_size // 4)
+        self.posEmbed       = nn.Embedding(pos, embed_size // 8)
+        self.linearFilter2  = nn.Linear(2 * embed_size  + 3 * embed_size // 8 + 1,
+                                        2 * embed_size  + 3 * embed_size // 8 + 1)
+        self.linearFilter   = nn.Linear(2 * embed_size  + 3 * embed_size // 8 + 1,
+                                        2 * embed_size  + 3 * embed_size // 8 + 1) #        
+        self.linearJoin1    = nn.Linear(2 * config.maxjoins  * embed_size, 
+                                        3 * embed_size)
+        self.linearJoin2    = nn.Linear(3 * embed_size,  3 * embed_size)
+        self.linearest      = nn.Linear(4, embed_size // 2)
+        self.project        = nn.Linear(embed_size * 7 + 8 * (embed_size // 8) + 1,
+                                        embed_size * 7 + 8 * (embed_size // 8) + 1)
+        # self.project        = nn.Linear(embed_size * 5 + 5 * (embed_size // 8),
+        #                                 embed_size * 5 + 5 * (embed_size // 8))
     def forward(self, feature):
         typeId, join, filtersId, filtersMask, posId,table,db_est = torch.split(
-                feature, (1, config.maxjoins, 6, 3, 1, 1,3), dim=-1)
-        # print(db_est)
-        typeEmb = self.getType(typeId)
-        joinEmb = self.getJoin(join)
+                feature, (1, config.maxjoins, 12, 3, 1, 1, 4), dim = -1)
+        typeEmb     = self.getType(typeId)
+        joinEmb     = self.getJoin(join)
         filterEmbed = self.getFilter(filtersId, filtersMask)
-        dbest = self.linearest(db_est)
-        tableEmb = self.getTable(table)
-        posEmb = self.getPos(posId)
-        final = torch.cat((typeEmb, filterEmbed, joinEmb, tableEmb, posEmb,dbest),dim=1)
-        temp = self.project(final)
-        final = F.leaky_relu(temp)       
+        dbest       = self.linearest(db_est)
+        tableEmb    = self.getTable(table)
+        posEmb      = self.getPos(posId)
+        # final       = torch.cat((typeEmb, joinEmb, tableEmb, posEmb, dbest),dim=1)
+        final       = torch.cat((typeEmb, filterEmbed, joinEmb, tableEmb, posEmb, dbest),dim=1)
+        temp        = self.project(final)
+        final       = F.leaky_relu(temp)       
         return final
 
     def getType(self, typeId):
@@ -60,43 +61,40 @@ class FeatureEmbed(nn.Module):
         joins = joins.long()
         joins_embed = self.columnEmbed(joins)
         joins_embed = torch.cat([joins_embed[:, i, :] for i in range(config.maxjoins)], dim=-1)
-
         concat = F.leaky_relu(self.linearJoin1(joins_embed))
         concat = F.leaky_relu(self.linearJoin2(concat))
         concat = concat.squeeze(1)
         return concat
     
-
     def getPos(self, posId):
-        posId = posId.long()
+        posId = posId.long()    
         emb = self.posEmbed(posId).squeeze(1)
         return emb
     
     def getFilter(self, filtersId, filtersMask):
-        ## get Filters, then apply mask
-        filterExpand = filtersId.view(-1, 2, 3).transpose(1, 2)
+        filterExpand = filtersId.view(-1, 4, 3).transpose(1, 2)
         colsId = filterExpand[:, :, 0].long()
         opsId = filterExpand[:, :, 1].long()
-        # vals = filterExpand[:, :, 2].unsqueeze(-1)  # b by 3 by 1
+        vals = filterExpand[:, :, 2].unsqueeze(-1)  # b by 3 by 1
+        dtypeId = filterExpand[:, :, 3].long()
 
         # b by 3 by embed_dim
 
         col = self.columnEmbed(colsId)
         op = self.opEmbed(opsId)
+        dtype = self.dtypeEmbed(dtypeId)
 
-        # concat = torch.cat((col, op, vals), dim=-1)
-        concat = torch.cat((col, op), dim=-1)
+        concat = torch.cat((col, op, vals, dtype), dim = -1)
+        # concat = torch.cat((col, op), dim=-1)
         concat = F.leaky_relu(self.linearFilter(concat))
         concat = F.leaky_relu(self.linearFilter2(concat))
-
-        ## apply mask
         concat[~filtersMask.bool()] = 0.
         ## avg by # of filters
         num_filters = torch.sum(filtersMask, dim=1) + 1e-10
         total = torch.sum(concat, dim=1)
         avg = total / num_filters.view(-1, 1)
         return avg
-
+    
 class PlanNetwork(nn.Module):
     def __init__(self, emb_size = config.emb_size ,ffn_dim = config.ffn_dim, \
                  head_size = config.head_size, dropout = 0.05, \
@@ -104,39 +102,40 @@ class PlanNetwork(nn.Module):
 
         super(PlanNetwork, self).__init__()
 
-        self.hidden_dim = config.hidden_dim
-        self.head_size = head_size
-        self.emb_size = emb_size
-        self.height_size = emb_size // 2
+        self.hidden_dim     = config.hidden_dim
+        self.head_size      = head_size
+        self.emb_size       = emb_size
+        self.height_size    = emb_size // 2
+        # self.structure_size = emb_size // 2
         self.height_encoder = nn.Embedding(config.heightsize, self.height_size , padding_idx=0)
-        self.input_dropout = nn.Dropout(dropout)
+        # self.structure_encoder = nn.Embedding(config.structuresize, self.structure_size , padding_idx=0)
+        self.input_dropout  = nn.Dropout(dropout)
         encoders = [
             EncoderLayer(self.hidden_dim, ffn_dim, dropout, attention_dropout_rate,
                          head_size) for _ in range(n_layers)
         ]
-        self.layers = nn.ModuleList(encoders)
-
-        self.final_ln = nn.LayerNorm(self.hidden_dim)
-
-        self.embbed_layer = FeatureEmbed(embed_size = emb_size, tables = config.tablenum, ops = config.opsnum)
+        self.layers         = nn.ModuleList(encoders)
+        self.final_ln       = nn.LayerNorm(self.hidden_dim)
+        self.embbed_layer   = FeatureEmbed(embed_size = emb_size)
 
     def forward(self, batched_data):
         attn_bias, x = batched_data['attn_bias'], batched_data['x']
         heights = batched_data['heights'].long()
-        n_batch, n_node = x.size()[:2]
+        n_batch, _ = x.size()[:2]
         tree_attn_bias = attn_bias.clone()
         tree_attn_bias = tree_attn_bias.unsqueeze(1).repeat(1, self.head_size, 1, 1)
         tree_attn_bias = tree_attn_bias[:, :, 1:, 1:]
-        x_view = x.contiguous().view(-1, 10 + config.maxjoins + 5)
+        # tree_attn_bias = None
+        x_view = x.contiguous().view(-1, config.num_node_feature)
         node_feature = self.embbed_layer(x_view).view(
             n_batch, -1, self.hidden_dim - self.height_size)
         height_feature = self.height_encoder(heights)
+        # structure_feature = self.structure_encoder(structure)
         node_feature = torch.cat([node_feature, height_feature], dim=2)
         output = self.input_dropout(node_feature)
         for enc_layer in self.layers:
             output = enc_layer(output, tree_attn_bias)
         output = self.final_ln(output)
-
         return output[:, 0, :] 
 
 
@@ -164,7 +163,7 @@ class MultiHeadAttention(nn.Module):
         self.head_size = head_size
 
         self.att_size = att_size = hidden_size // head_size
-        self.scale = att_size**-0.5
+        self.scale = att_size ** -0.5
 
         self.linear_q = nn.Linear(hidden_size, head_size * att_size)
         self.linear_k = nn.Linear(hidden_size, head_size * att_size)
@@ -257,7 +256,7 @@ class CustomModel(TorchModelV2,nn.Module):
         
         del input_dict["obs"]["action_mask"]
         represnetation = self.embedmodel(input_dict["obs"])
-        represnetation = torch.cat((represnetation,steps),dim=-1)
+        represnetation = torch.cat((represnetation,steps), dim=-1)
         action_embed, _ = self.model({
             "obs": represnetation
         })

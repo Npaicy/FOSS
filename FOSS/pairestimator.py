@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch
 from ASL import ASLSingleLabel
 import numpy as np
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+
 class PairCompare(nn.Module):
     def __init__(self,hid_units = 256, output_dim = 3):
         nn.Module.__init__(self)
@@ -11,8 +14,8 @@ class PairCompare(nn.Module):
         self.out_mlp1 = nn.Linear(in_feature + 1 , hid_units)
         self.out_mlp2 = nn.Linear(hid_units, hid_units // 2)
         self.out_mlp3 = nn.Linear(hid_units // 2, output_dim)
-        # self.out_dropout = nn.Dropout(0.3)
         self.reLU  =nn.LeakyReLU()
+
     def forward(self,feature):
         left = self.embed(feature['left'])
         right = self.embed(feature['right'])
@@ -26,16 +29,17 @@ class PairCompare(nn.Module):
         hid_right = self.reLU(self.out_mlp1(right))
         out = hid_left - hid_right
         out = self.reLU(self.out_mlp2(out))
-        # out = self.out_dropout(out)
         out = self.out_mlp3(out)
-        #out = nn.Softmax()(out)
         return out
+    
+    def get_embed(self, plan_feature):
+        self.embed.eval()
+        embeddings = self.embed(plan_feature)
+        self.embed.train()
+        return embeddings
 
-
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
 class MyDataset(Dataset):
-    def __init__(self, inputs, labels,weights):
+    def __init__(self, inputs, labels, weights):
         self.inputs = inputs
         self.labels = labels
         self.weights = weights
@@ -45,7 +49,6 @@ class MyDataset(Dataset):
     def __getitem__(self, idx):
         return self.inputs[idx], self.labels[idx],self.weights[idx]
 
-# @ray.remote
 class PairTrainer:
     def __init__(self,genConfig, device = None):
         self.config = genConfig
@@ -60,11 +63,13 @@ class PairTrainer:
         self._net = PairCompare(output_dim = self.config.classNum + 1).to(self.device)
         self.optimizer = torch.optim.Adam(self._net.parameters(),lr = self.config.pair_lr)
         self.loss_fn = ASLSingleLabel()
+        self.softmax = nn.Softmax(dim = 1)
         # self.loss_fn = nn.CrossEntropyLoss()
-        
-    def fit(self,dataset,valdataset = None,testdataset = None,mybatch_size = 64,epochs = 10):
+
+    def fit(self, dataset, valdataset=None, testdataset=None, mybatch_size = 64, epochs = 10, writer = None):
         dataloader = DataLoader(dataset, batch_size=mybatch_size, shuffle=True)
         self._net.train()
+        
         for epoch in range(epochs):
             cur_loss = 0
             num_ = 0
@@ -75,23 +80,28 @@ class PairTrainer:
                 batch_weights = batch_weights.to(self.device)
                 batch_labels = batch_labels.to(self.device)
                 prob = self._net(batch_inputs)
-                # left = self._net(batch_inputs['left'],posSignal = 'left')
-                # right = self._net(batch_inputs['right'],posSignal = 'right')
-                # diff = left - right
-                # prob = prob.squeeze(dim=1)  
-                loss = self.loss_fn(prob, batch_labels, batch_weights) # how much the right prefer the left
+                loss = self.loss_fn(prob, batch_labels, batch_weights)
                 cur_loss += loss.cpu().detach().item() * len(batch_labels)
                 num_ += len(batch_labels)
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
+            if writer is not None:
+                writer.add_scalar('Loss', cur_loss / num_, epoch)
             print(f"Epoch {epoch+1}/{epochs}, Loss: {cur_loss / num_}")
-            if valdataset!= None:
-                print('Validating......')
-                self.test_dataset(valdataset)
-            if testdataset != None:
-                print('Testing......')
-                self.test_dataset(testdataset)
+            
+            if valdataset is not None:
+                valacc, valreward = self.test_dataset(valdataset)
+                if  writer is not None:
+                    writer.add_scalar('Reward/Val', valreward, epoch)
+                    writer.add_scalar('Accuracy/Val', valacc, epoch)
+            
+            if testdataset is not None:
+                testacc, testreward = self.test_dataset(testdataset)
+                if writer is not None:
+                    writer.add_scalar('Reward/Test', testreward, epoch)
+                    writer.add_scalar('Accuracy/Test', testacc, epoch)
+
     def test_dataset(self, dataset):
         dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
         self._net.eval()
@@ -106,10 +116,7 @@ class PairTrainer:
                     batch_inputs[k1][k2] = batch_inputs[k1][k2].to(self.device)
             with torch.no_grad():
                 prob = self._net(batch_inputs).cpu().detach()
-
-                # batch_labels = batch_labels.unsqueeze(1)
-                # print(torch.cat([torch.argmax(prob, dim=1).unsqueeze(1),batch_labels],dim = -1))
-                # batch_labels = batch_labels.squeeze(1)
+                prob = self.softmax(prob)
                 predict_ = torch.argmax(prob, dim=1)
                 equal_1 = torch.logical_and(predict_ == 0, batch_labels == 0)
                 equal_2 = torch.logical_and(predict_ != 0, batch_labels != 0)
@@ -138,10 +145,12 @@ class PairTrainer:
         print('Label 0:{}/{} Label 1:{}/{} Label 2:{}/{}'.format(label0,sum(label == 0),
                                                                  label1,sum(label == 1),
                                                                  label2,sum(label == 2)))
-        print(f'AAM Accuracy:{correct/len(dataset)}  Average Reward:{total_reward / len(dataset)}')
+        print(f'Evaluator Accuracy:{correct/len(dataset)}  Average Reward:{total_reward / len(dataset)}')
 
-        return correct/len(dataset)
+        return correct/len(dataset), total_reward / len(dataset)
 
+    def get_embed(self, plan_feature):
+        return self._net.get_embed(plan_feature)
     
     def predict_pair(self, left,right):
         self._net.eval()
@@ -150,46 +159,10 @@ class PairTrainer:
         feature = {'left':left,'right':right}
         with torch.no_grad():
             prob = self._net(feature)
+            prob = self.softmax(prob)
         predicted_class = torch.argmax(prob, dim=1).tolist()
-        return predicted_class[0]
-
-    def predict_step(self, curr,optimal,base):
-        self._net.eval()
-        curr = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in curr.items()}
-        optimal = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in optimal.items()}
-        base = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in base.items()}
-        features = [{'left':optimal,'right':curr},{'left':base,'right':curr}]
-        left_batch = {k: torch.cat([feature['left'][k] for feature in features], dim=0) for k in curr.keys()}
-        right_batch = {k: torch.cat([feature['right'][k] for feature in features], dim=0) for k in curr.keys()}
-        with torch.no_grad():
-            prob = self._net({'left': left_batch, 'right': right_batch})
-        predicted_class = torch.argmax(prob, dim=1).tolist()
-        return predicted_class[0],predicted_class[1]
-    def predict_step3(self, esbest, curr, tocmpare):
-        self._net.eval()
-        curr = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in curr.items()}
-        esbest = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in esbest.items()}
-        tocmpare = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in tocmpare.items()}
-        features = [{'left':esbest,'right':curr},{'left':tocmpare,'right':curr}]
-        left_batch = {k: torch.cat([feature['left'][k] for feature in features], dim=0) for k in curr.keys()}
-        right_batch = {k: torch.cat([feature['right'][k] for feature in features], dim=0) for k in curr.keys()}
-        with torch.no_grad():
-            prob = self._net({'left': left_batch, 'right': right_batch})
-        predicted_class = torch.argmax(prob, dim=1).tolist()
-        return predicted_class[0],predicted_class[1]
-    def predict_step4(self, esbest, curr, tocompare, base):
-        self._net.eval()
-        curr = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in curr.items()}
-        esbest = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in esbest.items()}
-        tocompare = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in tocompare.items()}
-        base = {k: torch.tensor(v).to(self.device).unsqueeze(0) for k, v in base.items()}
-        features = [{'left':esbest,'right':curr},{'left':tocompare,'right':curr},{'left':base,'right':curr}]
-        left_batch = {k: torch.cat([feature['left'][k] for feature in features], dim=0) for k in curr.keys()}
-        right_batch = {k: torch.cat([feature['right'][k] for feature in features], dim=0) for k in curr.keys()}
-        with torch.no_grad():
-            prob = self._net({'left': left_batch, 'right': right_batch})
-        predicted_class = torch.argmax(prob, dim=1).tolist()
-        return predicted_class[0],predicted_class[1],predicted_class[2]
+        return predicted_class[0], prob.detach().numpy().tolist()[0]
+    
     def predict_list(self, inputs):
         self._net.eval()
         batch_size = 64
@@ -209,10 +182,9 @@ class PairTrainer:
 
             predicted_class = torch.argmax(prob, dim=1).cpu().detach().numpy()
             predicted_classes.extend(predicted_class.tolist())
-        # print(predicted_classes)
         return predicted_classes
-
-    def predict_epi(self,hint_feature):
+    
+    def predict_epi(self, hint_feature):
         self._net.eval()
         hint_norepeat = []
         preinputs = []
@@ -224,7 +196,33 @@ class PairTrainer:
                     if k != 'action_mask':
                         tmpdict[k] = torch.tensor(v).to(self.device).unsqueeze(0)
                 preinputs.append(tmpdict)
-                
+        best_hint = hint_norepeat[0]
+        best_feature = preinputs[0]
+        for k in range(1, len(hint_norepeat)):
+            feature_compared = preinputs[k]
+            feature = {'left':best_feature,'right':feature_compared}
+            with torch.no_grad():
+                prob = self._net(feature)
+                prob = self.softmax(prob)
+            predicted_class = torch.argmax(prob, dim=1).tolist()
+            if predicted_class[0] > 0:
+                best_hint = hint_norepeat[k]
+                best_feature = preinputs[k]
+        best_feature = {k: v.squeeze(0).numpy() for k, v in best_feature.items()}
+        return best_hint, best_feature
+
+    def predict_epi_parallel(self,hint_feature):
+        self._net.eval()
+        hint_norepeat = []
+        preinputs = []
+        for hf in hint_feature:
+            if hf[0] not in hint_norepeat:
+                hint_norepeat.append(hf[0])
+                tmpdict = {}
+                for k, v in hf[1].items():
+                    if k != 'action_mask':
+                        tmpdict[k] = torch.tensor(v).to(self.device).unsqueeze(0)
+                preinputs.append(tmpdict)           
         inputs = []
         identifier = {}
         counts = 0

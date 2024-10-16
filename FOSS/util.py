@@ -55,3 +55,12 @@ def get_median(L1, L2):
     median_value_l2 = sorted_l2[median_index]
     
     return median_value_l1, median_value_l2
+def swap_dict_items(data, key1, key2):
+    if key1 not in data or key2 not in data:
+        raise KeyError("Index Error")
+    items = list(data.items())
+    index1 = next(i for i, (k, v) in enumerate(items) if k == key1)
+    index2 = next(i for i, (k, v) in enumerate(items) if k == key2)
+    items[index1], items[index2] = items[index2], items[index1]
+    new_data = dict(items)
+    return new_data

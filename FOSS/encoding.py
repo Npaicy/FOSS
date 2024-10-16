@@ -44,8 +44,6 @@ class Encoding:
             13: "Gather Merge",
             14: 'Limit'
         }
-        # self.join2idx = {}
-        # self.idx2join = {}
         self.table2idx = {'NA': 0}
         self.idx2table = {0: 'NA'}
         self.maxjoinlen = 0
@@ -59,18 +57,18 @@ class Encoding:
             val_norm = (val - mini) / (maxi - mini)
         return val_norm
 
-    def encode_filters(self,filters=[], name=None):
-        ## filters: list of dict
-        # print(filters)
+    def encode_filters(self, filters, alias, aliastable):
+        res = {'colId': [], 'opId': [], 'val':[],'dtype':[]}
         if len(filters) == 0:
-            return {
-                'colId': [self.col2idx['NA']],
-                'opId': [self.op2idx['NA']],
-            }
-        res = {'colId': [], 'opId': []}
+            return res  # 0:number  1:text 2:NULL
         for filt in filters:
-            if ("::text" in filt):
+            if "::" in filt:
                 filt = filt.replace('::text','')
+                filt = filt.replace('::bpchar','')
+                filt = filt.replace('::date','')
+                filt = filt.replace('::timestamp','')
+                filt = filt.replace('::integer[]','')
+                filt = filt.replace('::numeric','')
                 filt_split = filt.split(' ')
                 col = filt_split[0].strip("'()")
                 if ' = ANY ' in filt:
@@ -78,22 +76,25 @@ class Encoding:
                 else:
                     if filt_split[1] not in self.op2idx:
                         self.op2idx[filt_split[1]] = len(self.op2idx)
-                        print(self.op2idx)
                     op = self.op2idx[filt_split[1]]
-                # continue
+                val = 0.0
+                dtype = 1
             elif 'IS NOT NULL' in filt:
                 filt_split = filt.split(' ')
                 col = filt_split[0].strip('()')
                 op = self.op2idx['IS NOT NULL']
+                val = 0.0
+                dtype = 2
             elif 'IS NULL' in filt:
                 filt_split = filt.split(' ')
                 col = filt_split[0].strip('()')
                 op = self.op2idx['IS NULL']
+                val = 0.0
+                dtype = 2
             else:
                 filt = ''.join(c for c in filt if c not in '()')
                 if ' OR ' in filt:
                     fs = filt.split(' OR ')
-                    # print(filt)
                 elif ' AND ' in filt:
                     fs = filt.split(' AND ')
                 else:
@@ -103,62 +104,45 @@ class Encoding:
                         if tmpop in f:
                             try:
                                 op = self.op2idx[tmpop]
-                                col = f.split(tmpop)[0]
-                                col = col.strip()
-                                # print(col)
+                                col = f.split(tmpop)[0].strip()
+                                val = self.normalize_val(aliastable[alias] + '.' + col, float(f.split(tmpop)[1]))
+                                dtype = 0
                                 break
                             except:
-                                print(f)
-                            # try:
-                            #     col, op, _ = f.split(' ')
-                            #     op = self.op2idx[op]
-                            # except:
-                            #     if ' = ANY ' in f:
-                            #         col, _ = f.split(' = ANY ')
-                            #         op = self.op2idx['= ANY']
-                            #     else:
-                            #         print(f)
-                            #         raise 'ERROR'
-            column = name + '.' + col
+                                op = self.op2idx[tmpop]
+                                col = f.split(tmpop)[0].strip()
+                                val = 0.0
+                                dtype = 1
+                                # print(filters)
+            column = aliastable[alias] + '.' + col
             if column not in self.col2idx:
                 self.col2idx[column] = len(self.col2idx)
                 self.idx2col[self.col2idx[column]] = column
             if self.col2idx[column] not in res['colId']:
                 res['colId'].append(self.col2idx[column])
                 res['opId'].append(op)
-            if (len(res['colId']) == 0):
-                res = {
-                    'colId': [self.col2idx['NA']],
-                    'opId': [self.op2idx['NA']]
-                }
-                return res
+                res['val'].append(val)
+                res['dtype'].append(dtype)
+
         return res
 
     def encode_join(self, join):
-        if join == None:
+        joinNum = len(join) * 2
+        if joinNum == 0:
             return [self.col2idx['NA']] * self.config.maxjoins
-        if ' and ' in join:
-            join_lst = join.split(' and ')
-        else:
-            join_lst = [join]
         joinid = []
-        for _join in join_lst:
-            for op in BINOP:
-                if op in _join:
-                    for tc in _join.split(op):
-                        if tc not in self.col2idx:
-                            
-                            self.col2idx[tc] = len(self.col2idx)
-                            self.idx2col[self.col2idx[tc]] = tc
-                        joinid.append(self.col2idx[tc])
-                    break
-        if len(joinid) > self.maxjoinlen:
-            self.maxjoinlen = len(joinid)
-            print('Now Join Length:',self.maxjoinlen)
-        if len(joinid) < self.config.maxjoins:
-            joinid.extend([self.col2idx['NA']] * (self.config.maxjoins - len(joinid)))
-        elif len(joinid) > self.config.maxjoins:
-            print(join)
+        for onejoin in join:
+            for tc in onejoin[1:]:
+                if tc not in self.col2idx:
+                    self.col2idx[tc] = len(self.col2idx)
+                    self.idx2col[self.col2idx[tc]] = tc
+                joinid.append(self.col2idx[tc])
+        if joinNum > self.maxjoinlen:
+            self.maxjoinlen = joinNum
+            # print('Now Join Length:',self.maxjoinlen)
+        if joinNum <= self.config.maxjoins:
+            joinid.extend([self.col2idx['NA']] * (self.config.maxjoins - joinNum))
+        else:
             raise Exception('Too many joins! Please increase the value of maxjoins in config.py!')
         return joinid
 

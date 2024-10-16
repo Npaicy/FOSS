@@ -1,6 +1,7 @@
 import os
 import csv 
 import math
+import pandas as pd
 # @ray.remote
 class DataColletor:
     def __init__(self, genConfig):
@@ -37,7 +38,16 @@ class DataColletor:
 
     def collect_planJsonPool(self, queryno, planjson, label, istimeout):
         self.planJsonPool.append([queryno, planjson, label, istimeout])
-        
+
+    def get_featuresPool(self):
+        features = []
+        for queryId in self.planVecPool:
+            queryId_len = len(self.planVecPool[queryId])
+            for k in range(queryId_len):
+                features.append(self.planVecPool[queryId][k][0])
+        features = pd.Series(features)
+        return features
+    
     def wirte_planJsonPool(self, path):
         if not os.path.exists(path):
             with open(path,mode='w',newline='',encoding='utf8') as cf:
@@ -57,13 +67,13 @@ class DataColletor:
         Labels = []
         Weights = []
         for k,v in self.planVecPool.items():
-            inputs,labels,weights = self.getpair_muti_full(v)
+            inputs, labels, weights = self.getpair_muti_full(v)
             Inputs.extend(inputs)
             Labels.extend(labels)
             Weights.extend(weights)
         return Inputs, Labels, Weights
         
-    def getpair_muti_full(self,old_fea_latency):
+    def getpair_muti_full(self, old_fea_latency):
         old_length = len(old_fea_latency)
         inputs = []
         labels = []
@@ -74,7 +84,7 @@ class DataColletor:
         to_save = []
         to_delete= []
         for i in range(old_length):
-            if old_fea_latency[i][2]:   # 标记超时的plan
+            if old_fea_latency[i][2]:   
                 to_delete.append(i)
             else:
                 to_save.append(i)
@@ -84,15 +94,11 @@ class DataColletor:
             for j in to_delete:
                 plan_pair = {'left':old_fea_latency[j][0],'right':old_fea_latency[i][0]}
                 latency_pair = [old_fea_latency[j][1], old_fea_latency[i][1]]
-                label = 0
+                label = 1
                 for l, p in enumerate(self.config.splitpoint):
                     if (latency_pair[0] - latency_pair[1]) / latency_pair[0] >= p:
                         label = self.config.classNum - l
                         break
-                # if (latency_pair[0] - latency_pair[1]) / latency_pair[0] >= config.splitpoint[0]:
-                #     label = config.classNum 
-                    
-                # if label != 0: # 因为动态变化的timeout
                 labels.append(label)
                 weights.append(math.log10(1 + (max(latency_pair) - min(latency_pair))))
                 inputs.append(plan_pair)

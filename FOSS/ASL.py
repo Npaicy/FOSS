@@ -12,10 +12,6 @@ class ASLSingleLabel(nn.Module):
         self.reduction = reduction
 
     def forward(self, inputs, target, weights):
-        '''
-        "input" dimensions: - (batch_size,number_classes)
-        "target" dimensions: - (batch_size)
-        '''
         num_classes = inputs.size()[-1]
         log_preds = self.logsoftmax(inputs)
         self.targets_classes = torch.zeros_like(inputs).scatter_(1, target.long().unsqueeze(1), 1)
@@ -37,8 +33,8 @@ class ASLSingleLabel(nn.Module):
         # loss calculation
         loss = - self.targets_classes.mul(log_preds)
         loss = loss.sum(dim=-1)
-        # weights = torch.pow(input=torch.tensor(2),exponent = weights)
-        # loss = weights * loss
+        # weights = torch.pow(input=torch.tensor(2), exponent = weights)
+        loss = weights * loss
         if self.reduction == 'mean':
             loss = loss.mean()
         return loss
