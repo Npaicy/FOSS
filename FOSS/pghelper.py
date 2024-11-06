@@ -39,7 +39,8 @@ class PGHelper:
             if hint in self.latencyBuffer[queryid]:
                 return self.latencyBuffer[queryid][hint], False, None
         try:
-            self.cur.execute("SET statement_timeout = " + str(timeout) + ";")
+            if hint != '':
+                self.cur.execute("SET statement_timeout = " + str(timeout) + ";")
             self.cur.execute(hint + sql)
             timeout = False
         except KeyboardInterrupt:

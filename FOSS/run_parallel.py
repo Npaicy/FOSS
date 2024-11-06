@@ -157,7 +157,7 @@ class FOSS():
                 while not done:
                     actions.clear()
                     for i in range(self.genConfig.num_policies):
-                        actions[i] = self.planner.compute_single_action(obs[i], policy_id = 'policy_{}'.format(i), explore = True) #  explore = True or False? 
+                        actions[i] = self.planner.compute_single_action(obs[i], policy_id = 'policy_{}'.format(i), explore = False) #  explore = True or False? 
                     obs, reward, terminated, _, info_all = self.evalEnv.step(actions)
                     for k in info_all:
                         if isTest:
@@ -264,7 +264,7 @@ if __name__ == "__main__":
                         help="Random Seed")
     parser.add_argument("--Maxsteps", type=int, default = 3,
                         help="Max steps of agent")
-    parser.add_argument("--Maxsamples", type=int, default = 10,
+    parser.add_argument("--Maxsamples", type=int, default = 5, # JOBRand 5 TPCDS&STACK 25 or more
                         help="Maximum number of samples in a single iteration (in best plan manager)")
     parser.add_argument("--TotalIter", type=int, default = 300,
                         help="The total number of iterations for which the planner is trained")
@@ -300,7 +300,6 @@ if __name__ == "__main__":
 
     for arg, config_attr in arg_to_config.items():
         arg_value = getattr(args, arg, None)
-        # print(arg,arg_value)
         if arg_value is not None:
             if isinstance(config_attr, tuple):
                 for attr in config_attr:
